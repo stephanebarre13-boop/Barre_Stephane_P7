@@ -1,6 +1,8 @@
-# Projet 7 - Implémentez un modèle de scoring
+# Projet 7 - Implementez un modèle de scoring
 
-**Auteur :** Stéphane BARRE  
+[![CI Tests](https://github.com/stephanebarre13-boop/Barre_Stephane_P7/actions/workflows/main.yml/badge.svg)](https://github.com/stephanebarre13-boop/Barre_Stephane_P7/actions/workflows/main.yml)
+
+**Auteur :** Stéphane BARRE
 **Formation :** OpenClassrooms - Parcours Data Scientist  
 **Date :** Février 2026
 
