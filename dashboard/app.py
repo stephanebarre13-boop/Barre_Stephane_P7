@@ -47,9 +47,75 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-API_URL = "http://127.0.0.1:8000"
+import os
+USE_API = os.getenv("USE_API", "false").lower() == "true"
+API_URL = "http://127.0.0.1:8000" if USE_API else None
 
-# Libellés métier (à enrichir si tu veux)
+# Chargement modèle local
+if not USE_API:
+    import joblib
+    import numpy as np
+    MODEL_PATH = "meilleur_modele.joblib"
+    SEUIL_OPTIMAL = 0.370
+    
+    try:
+        MODEL = joblib.load(MODEL_PATH)
+        st.sidebar.success("🤖 Modèle chargé localement")
+    except Exception as e:
+        st.sidebar.error(f"❌ Erreur: {e}")
+        MODEL = None
+else:
+    MODEL = None
+    SEUIL_OPTIMAL = 0.370
+
+def predict_local(features_dict):
+    """Prédiction locale"""
+    if MODEL is None:
+        raise ValueError("Modèle non chargé")
+    
+    features_array = np.array(list(features_dict.values())).reshape(1, -1)
+    proba = MODEL.predict_proba(features_array)[0][1]
+    decision = 1 if proba >= SEUIL_OPTIMAL else 0
+    
+    return {
+        "decision": decision,
+        "decision_label": "REFUSÉ" if decision == 1 else "ACCORDÉ",
+        "probabilite_defaut": proba,
+        "seuil_decision": SEUIL_OPTIMAL,
+        "confiance": "FORTE" if abs(proba - SEUIL_OPTIMAL) > 0.2 else "MOYENNE",
+        "interpretation": f"Score de risque : {proba:.1%}"
+    }
+
+def explain_local(features_dict, top_n=10):
+    """Explainability SHAP locale"""
+    if MODEL is None:
+        return {"top_features": [], "shap_values": [], "feature_values": []}
+    
+    try:
+        import shap
+        features_array = np.array(list(features_dict.values())).reshape(1, -1)
+        
+        explainer = shap.TreeExplainer(MODEL)
+        shap_values = explainer.shap_values(features_array)
+        
+        if isinstance(shap_values, list):
+            shap_vals = shap_values[1][0]
+        else:
+            shap_vals = shap_values[0]
+        
+        feature_names = list(features_dict.keys())
+        indices = np.argsort(np.abs(shap_vals))[-top_n:][::-1]
+        
+        return {
+            "top_features": [feature_names[i] for i in indices],
+            "shap_values": [float(shap_vals[i]) for i in indices],
+            "feature_values": [float(features_array[0][i]) for i in indices]
+        }
+    except Exception as e:
+        st.warning(f"SHAP local échoué: {e}")
+        return {"top_features": [], "shap_values": [], "feature_values": []}
+
+# Mapping features vers libellés métier
 FEATURE_LABELS: Dict[str, str] = {
     "FEATURE_16": "Montant du crédit",
     "FEATURE_13": "Annuité",
@@ -138,6 +204,10 @@ st.markdown(
 # =========================
 
 def verifier_api_live() -> Tuple[bool, Dict[str, Any] | None]:
+    """Vérifie si l'API est accessible (seulement si USE_API=true)"""
+    if not USE_API:
+        return True, {"status": "Modèle local", "mode": "standalone"}
+    
     try:
         resp = requests.get(f"{API_URL}/health", timeout=2)
         if resp.status_code == 200:
@@ -615,14 +685,16 @@ with tab1:
 
             with st.spinner("🔄 Analyse en cours..."):
                 try:
-                    resp = requests.post(f"{API_URL}/predict", json={"features": features}, timeout=30)
-
-                    if resp.status_code != 200:
-                        st.error(f"❌ Erreur /predict : {resp.status_code}")
-                        st.code(resp.text)
-                        raise RuntimeError("/predict a échoué")
-
-                    result = resp.json()
+                    if USE_API:
+                        resp = requests.post(f"{API_URL}/predict", json={"features": features}, timeout=30)
+                        if resp.status_code != 200:
+                            st.error(f"❌ Erreur /predict : {resp.status_code}")
+                            st.code(resp.text)
+                            raise RuntimeError("/predict a échoué")
+                        result = resp.json()
+                    else:
+                        result = predict_local(features)
+                    
                     st.session_state["last_result"] = result
 
                     # Résultat
@@ -679,17 +751,22 @@ with tab1:
                         st.markdown("---")
                         st.subheader("🧠 Explication immédiate (SHAP – résumé)")
 
-                        shap_resp = requests.post(
-                            f"{API_URL}/explain",
-                            json={"features": features, "top_n": int(shap_top_n)},
-                            timeout=30,
-                        )
-
-                        if shap_resp.status_code != 200:
-                            st.error(f"❌ Erreur /explain : {shap_resp.status_code}")
-                            st.code(shap_resp.text)
+                        if USE_API:
+                            shap_resp = requests.post(
+                                f"{API_URL}/explain",
+                                json={"features": features, "top_n": int(shap_top_n)},
+                                timeout=30,
+                            )
+                            if shap_resp.status_code != 200:
+                                st.error(f"❌ Erreur /explain : {shap_resp.status_code}")
+                                st.code(shap_resp.text)
+                                shap_result = None
+                            else:
+                                shap_result = shap_resp.json()
                         else:
-                            shap_result = shap_resp.json()
+                            shap_result = explain_local(features, top_n=int(shap_top_n))
+                        
+                        if shap_result:
                             st.session_state["last_shap"] = shap_result
 
                             if show_shap_debug:
