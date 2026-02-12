@@ -517,16 +517,19 @@ with st.sidebar:
         api_ok = st.session_state["api_ok"]
         api_info = st.session_state["api_info"]
 
-    if api_ok:
-        st.success("✅ API Connectée")
-        if api_info:
-            st.caption(f"Version: {api_info.get('version', 'N/A')}")
-            st.caption(f"Pipeline: {'✅' if api_info.get('pipeline_charge') else '❌'}")
-            # SHAP vérifié fonctionnel via test /explain
-            st.caption(f"SHAP: ✅")
+if USE_API:
+        if api_ok:
+            st.success("✅ API Connectée")
+            if api_info:
+                st.caption(f"Version: {api_info.get('version', 'N/A')}")
+                st.caption(f"Pipeline: {'✅' if api_info.get('pipeline_charge') else '❌'}")
+                st.caption(f"SHAP: ✅")
+        else:
+            st.error("❌ API Déconnectée")
+            st.caption("Vérifiez que l'API est lancée sur le port 8000")
     else:
-        st.error("❌ API Déconnectée")
-        st.caption("Vérifiez que l'API est lancée sur le port 8000")
+        st.info("🤖 Mode standalone - Modèle chargé localement")
+
 
     st.markdown("---")
     st.subheader("⚙️ Options")
