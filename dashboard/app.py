@@ -99,16 +99,7 @@ except Exception as e:
 # Pas de modèle local en mode API
 MODEL = None
 SEUIL_OPTIMAL = 0.370
-    
-    try:
-        MODEL = joblib.load(MODEL_PATH)
-        st.sidebar.success("🤖 Modèle chargé localement")
-    except Exception as e:
-        st.sidebar.error(f"❌ Erreur: {e}")
-        MODEL = None
-else:
-    MODEL = None
-    SEUIL_OPTIMAL = 0.370
+
 
 def predict_local(features_dict):
     """Prédiction locale"""
