@@ -41,11 +41,47 @@ import streamlit as st
 # =========================
 
 st.set_page_config(
-    page_title="Scoring Crédit - Prêt à dépenser (V3 Jury Premium)",
+    page_title="Système de Scoring Crédit - Prêt à dépenser - Accessible",
     page_icon="💰",
     layout="wide",
     initial_sidebar_state="expanded",
 )
+
+# Accessibilité : Message d'introduction
+st.markdown("""
+<div role="main" aria-label="Application de scoring crédit">
+    <p class="sr-only">Cette application permet d'évaluer le risque de crédit avec explications détaillées. Navigation au clavier possible avec Tab.</p>
+</div>
+""", unsafe_allow_html=True)
+# CSS pour accessibilité
+st.markdown("""
+<style>
+    .sr-only {
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0,0,0,0);
+        border: 0;
+    }
+    
+    /* Contraste amélioré */
+    .stButton>button {
+        border: 2px solid #0066cc;
+    }
+    
+    /* Focus visible pour navigation clavier */
+    *:focus {
+        outline: 3px solid #0066cc !important;
+        outline-offset: 2px !important;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+import os
+USE_API = os.getenv("USE_API", "false").lower() == "true"
 
 import os
 USE_API = os.getenv("USE_API", "false").lower() == "true"
@@ -737,14 +773,17 @@ with tab1:
                         st.caption(f"Confiance: **{result.get('confiance', '')}**")
 
                     st.markdown("### 📊 Visualisation du risque")
+                    st.markdown('<p class="sr-only">Jauge de risque : Score de probabilité de défaut du client</p>', unsafe_allow_html=True)
+                    st.markdown('<p class="sr-only">Graphique SHAP : Facteurs influençant la décision</p>', unsafe_allow_html=True)
                     st.plotly_chart(creer_jauge_probabilite(prob, seuil), use_container_width=True)
-
                     interp = result.get("interpretation", "")
                     if interp:
                         st.info(f"**💡 Interprétation:** {interp}")
 
                     if show_radar:
                         st.markdown("### 🕸️ Profil du client")
+                        st.markdown('<p class="sr-only">Graphique SHAP : Facteurs influençant la décision</p>', unsafe_allow_html=True)
+                        st.markdown('<p class="sr-only">Graphique radar : Profil des caractéristiques du client</p>', unsafe_allow_html=True)
                         st.plotly_chart(creer_radar_chart(features), use_container_width=True)
 
                     # SHAP preview + storytelling + PDF
