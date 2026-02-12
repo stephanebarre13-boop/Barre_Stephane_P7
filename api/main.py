@@ -193,15 +193,55 @@ def build_transformed_row(features: Dict[str, Any]) -> Tuple[np.ndarray, List[st
     """
     Returns (X_transformed, feature_names) aligned with the trained model.
     
-    FIXED VERSION: Handles FEATURE_XX from dashboard by expanding to Column_0..803
+    NEW VERSION: 
+    - Détecte si colonnes métier (50 colonnes) → utilise preprocessor
+    - Sinon FEATURE_XX → expand to Column_0..803
+    - Sinon Column_XX → utilise tel quel
     """
     if model is None:
         raise RuntimeError("Modèle non chargé")
     
-    # Étape 1: Expansion des features si nécessaire (FEATURE_XX -> Column_XX)
-    features = expand_features_to_804(features)
+    # Détection du type de features reçues
+    feature_keys = list(features.keys())
+    has_column_format = any(k.startswith("Column_") for k in feature_keys)
+    has_feature_format = any(k.startswith("FEATURE_") for k in feature_keys)
     
-    # Étape 2: Créer DataFrame avec colonnes alignées au modèle
+    # CAS 1: Colonnes métier brutes (ex: AGE, INCOME, etc.) → utiliser preprocessor
+    if not has_column_format and not has_feature_format and preprocessor is not None:
+        logger.info("🔄 Colonnes métier détectées → transformation via preprocessor")
+        try:
+            df_input = pd.DataFrame([features])
+            X_transformed = preprocessor.transform(df_input)
+            X = ensure_2d_array(X_transformed)
+            
+            if MODEL_FEATURE_NAMES is None:
+                raise RuntimeError("MODEL_FEATURE_NAMES non disponible")
+            
+            # Vérifier que la transformation a bien produit 804 features
+            if X.shape[1] != len(MODEL_FEATURE_NAMES):
+                logger.warning(
+                    f"⚠️ Preprocessor a produit {X.shape[1]} features, "
+                    f"attendu {len(MODEL_FEATURE_NAMES)}. Padding avec 0."
+                )
+                if X.shape[1] < len(MODEL_FEATURE_NAMES):
+                    padding = np.zeros((1, len(MODEL_FEATURE_NAMES) - X.shape[1]))
+                    X = np.hstack([X, padding])
+                else:
+                    X = X[:, :len(MODEL_FEATURE_NAMES)]
+            
+            logger.info(f"✅ Transformation réussie: {X.shape[1]} features")
+            return X, MODEL_FEATURE_NAMES
+            
+        except Exception as exc:
+            logger.error(f"❌ Erreur transformation preprocessor: {exc}")
+            raise RuntimeError(f"Erreur preprocessing: {exc}")
+    
+    # CAS 2: Format FEATURE_XX → expand to Column_0..803
+    if has_feature_format:
+        logger.info("🔄 Format FEATURE_XX détecté → expansion vers Column_*")
+        features = expand_features_to_804(features)
+    
+    # CAS 3: Format Column_XX ou après expansion
     if MODEL_FEATURE_NAMES is None:
         raise RuntimeError("MODEL_FEATURE_NAMES non disponible")
     
@@ -209,6 +249,7 @@ def build_transformed_row(features: Dict[str, Any]) -> Tuple[np.ndarray, List[st
     df = df.reindex(columns=MODEL_FEATURE_NAMES, fill_value=0.0)
     X = ensure_2d_array(df.values)
     
+    logger.info(f"✅ Features alignées: {X.shape[1]} colonnes")
     return X, MODEL_FEATURE_NAMES
 
 
