@@ -721,17 +721,71 @@ with tab1:
             st.session_state["last_features"] = features
             st.session_state["last_client_inputs"] = client_inputs
 
-            with st.spinner("🔄 Analyse en cours..."):
+           with st.spinner("🔄 Analyse en cours..."):
+    try:
+        if USE_API:
+            # Transformer avec le preprocessor local
+            if PREPROCESSOR is not None:
                 try:
-                    if USE_API:
-                        resp = requests.post(f"{API_URL}/predict", json={"features": features}, timeout=30)
-                        if resp.status_code != 200:
-                            st.error(f"❌ Erreur /predict : {resp.status_code}")
-                            st.code(resp.text)
-                            raise RuntimeError("/predict a échoué")
-                        result = resp.json()
-                    else:
-                        result = predict_local(features)
+                    import numpy as np
+                    
+                    # Créer DataFrame avec les colonnes métier
+                    df_input = pd.DataFrame([client_inputs])
+                    
+                    # Transformer avec preprocessor
+                    X_transformed = PREPROCESSOR.transform(df_input)
+                    
+                    # Convertir en dict Column_0, Column_1, etc.
+                    features_transformed = {f"Column_{i}": float(X_transformed[0, i]) for i in range(X_transformed.shape[1])}
+                    
+                    # Envoyer à l'API
+                    resp = requests.post(f"{API_URL}/predict", json={"features": features_transformed}, timeout=30)
+                except Exception as e:
+                    st.error(f"❌ Erreur transformation: {e}")
+                    raise
+            else:
+                # Fallback: envoyer features brutes
+                resp = requests.post(f"{API_URL}/predict", json={"features": features}, timeout=30)
+            
+            if resp.status_code != 200:
+                st.error(f"❌ Erreur /predict : {resp.status_code}")
+                st.code(resp.text)
+                raise RuntimeError("/predict a échoué")
+            result = resp.json()
+        else:
+            result = predict_local(features)with st.spinner("🔄 Analyse en cours..."):
+    try:
+        if USE_API:
+            # Transformer avec le preprocessor local
+            if PREPROCESSOR is not None:
+                try:
+                    import numpy as np
+                    
+                    # Créer DataFrame avec les colonnes métier
+                    df_input = pd.DataFrame([client_inputs])
+                    
+                    # Transformer avec preprocessor
+                    X_transformed = PREPROCESSOR.transform(df_input)
+                    
+                    # Convertir en dict Column_0, Column_1, etc.
+                    features_transformed = {f"Column_{i}": float(X_transformed[0, i]) for i in range(X_transformed.shape[1])}
+                    
+                    # Envoyer à l'API
+                    resp = requests.post(f"{API_URL}/predict", json={"features": features_transformed}, timeout=30)
+                except Exception as e:
+                    st.error(f"❌ Erreur transformation: {e}")
+                    raise
+            else:
+                # Fallback: envoyer features brutes
+                resp = requests.post(f"{API_URL}/predict", json={"features": features}, timeout=30)
+            
+            if resp.status_code != 200:
+                st.error(f"❌ Erreur /predict : {resp.status_code}")
+                st.code(resp.text)
+                raise RuntimeError("/predict a échoué")
+            result = resp.json()
+        else:
+            result = predict_local(features)
                     
                     st.session_state["last_result"] = result
 
