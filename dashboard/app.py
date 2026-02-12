@@ -55,7 +55,7 @@ API_URL = "http://127.0.0.1:8000" if USE_API else None
 if not USE_API:
     import joblib
     import numpy as np
-    MODEL_PATH = "meilleur_modele.joblib"
+    MODEL_PATH = os.path.join(os.path.dirname(__file__), "meilleur_modele.joblib")
     SEUIL_OPTIMAL = 0.370
     
     try:
