@@ -517,7 +517,7 @@ with st.sidebar:
         api_ok = st.session_state["api_ok"]
         api_info = st.session_state["api_info"]
 
-if USE_API:
+    if USE_API:
         if api_ok:
             st.success("✅ API Connectée")
             if api_info:
@@ -529,7 +529,6 @@ if USE_API:
             st.caption("Vérifiez que l'API est lancée sur le port 8000")
     else:
         st.info("🤖 Mode standalone - Modèle chargé localement")
-
 
     st.markdown("---")
     st.subheader("⚙️ Options")
