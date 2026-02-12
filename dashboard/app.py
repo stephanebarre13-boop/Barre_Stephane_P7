@@ -81,18 +81,24 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 import os
-USE_API = os.getenv("USE_API", "false").lower() == "true"
+import joblib
 
-import os
-USE_API = os.getenv("USE_API", "false").lower() == "true"
-API_URL = "http://127.0.0.1:8000" if USE_API else None
+# Configuration API
+USE_API = True  # Toujours utiliser l'API
+API_URL = "https://api-scoring-credit-p7.onrender.com"
 
-# Chargement modèle local
-if not USE_API:
-    import joblib
-    import numpy as np
-    MODEL_PATH = os.path.join(os.path.dirname(__file__), "meilleur_modele.joblib")
-    SEUIL_OPTIMAL = 0.370
+# Charger le preprocessor localement
+PREPROCESSOR_PATH = os.path.join(os.path.dirname(__file__), "preprocesseur.joblib")
+try:
+    PREPROCESSOR = joblib.load(PREPROCESSOR_PATH)
+    st.sidebar.success("🔄 Preprocessor chargé")
+except Exception as e:
+    PREPROCESSOR = None
+    st.sidebar.error(f"⚠️ Preprocessor non chargé: {e}")
+
+# Pas de modèle local en mode API
+MODEL = None
+SEUIL_OPTIMAL = 0.370
     
     try:
         MODEL = joblib.load(MODEL_PATH)
