@@ -83,6 +83,21 @@ st.markdown("""
 import os
 import joblib
 
+# Fonction nécessaire pour le preprocessor
+def convert_to_string(x):
+    """Fonction nécessaire pour décharger le preprocessor"""
+    import pandas as pd
+    import numpy as np
+    if isinstance(x, (pd.Series, pd.DataFrame)):
+        return x.astype(str)
+    if isinstance(x, np.ndarray):
+        return x.astype(str)
+    return x
+
+# Configuration API
+USE_API = True  # Toujours utiliser l'API
+API_URL = "https://api-scoring-credit-p7.onrender.com"
+
 # Configuration API
 USE_API = True  # Toujours utiliser l'API
 API_URL = "https://api-scoring-credit-p7.onrender.com"
