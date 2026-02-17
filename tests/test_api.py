@@ -56,9 +56,12 @@ def test_predict_features_valides():
 
 
 def test_predict_features_vides():
-    """Verifie que predict rejette une requete sans features."""
+    """Verifie que predict gere les features vides avec des valeurs par defaut."""
     response = client.post("/predict", json={"features": {}})
-    assert response.status_code in [400, 422, 500]
+    assert response.status_code == 200
+    data = response.json()
+    assert "probabilite_defaut" in data
+    assert "decision_label" in data
 
 
 def test_root():
