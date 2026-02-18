@@ -44,7 +44,8 @@ DOSSIER_API = Path(__file__).resolve().parent
 DOSSIER_RACINE = DOSSIER_API.parent
 DOSSIER_ARTIFACTS = DOSSIER_RACINE / "artifacts"
 
-CHEMIN_PIPELINE = DOSSIER_ARTIFACTS / "pipeline_final.joblib"
+CHEMIN_MODELE = DOSSIER_ARTIFACTS / "meilleur_modele.joblib"
+CHEMIN_PREPROCESSEUR = DOSSIER_ARTIFACTS / "preprocesseur.joblib"
 CHEMIN_PARAMS = DOSSIER_ARTIFACTS / "parametres_decision.joblib"
 
 # -----------------------------------------------------------------------------
@@ -52,14 +53,22 @@ CHEMIN_PARAMS = DOSSIER_ARTIFACTS / "parametres_decision.joblib"
 # -----------------------------------------------------------------------------
 
 def charger_pipeline() -> Any:
-    """Charge le pipeline sklearn sauvegardé"""
-    if not CHEMIN_PIPELINE.exists():
+    """Charge le modèle et le préprocesseur séparément"""
+    if not CHEMIN_MODELE.exists():
         raise FileNotFoundError(
-            f"Pipeline introuvable: {CHEMIN_PIPELINE}. "
+            f"Modèle introuvable: {CHEMIN_MODELE}. "
             "Exécutez les notebooks pour générer le modèle."
         )
-    logger.info(f"Chargement pipeline depuis: {CHEMIN_PIPELINE}")
-    return joblib.load(CHEMIN_PIPELINE)
+    if not CHEMIN_PREPROCESSEUR.exists():
+        raise FileNotFoundError(
+            f"Préprocesseur introuvable: {CHEMIN_PREPROCESSEUR}. "
+            "Exécutez les notebooks pour générer le préprocesseur."
+        )
+    logger.info(f"Chargement modèle depuis: {CHEMIN_MODELE}")
+    logger.info(f"Chargement préprocesseur depuis: {CHEMIN_PREPROCESSEUR}")
+    modele = joblib.load(CHEMIN_MODELE)
+    preprocesseur = joblib.load(CHEMIN_PREPROCESSEUR)
+    return modele, preprocesseur
 
 
 def charger_parametres_decision() -> Dict[str, Any]:
@@ -82,18 +91,15 @@ def charger_parametres_decision() -> Dict[str, Any]:
 # Load at startup
 # -----------------------------------------------------------------------------
 try:
-    pipeline_final = charger_pipeline()
-    logger.info("✅ Pipeline chargé avec succès")
-    # ✅ Ajout demandé : log des steps
-    try:
-        logger.info(f"Pipeline steps: {pipeline_final.named_steps.keys()}")
-    except Exception:
-        # fallback si objet inattendu
-        logger.info(f"Pipeline steps: {[name for name, _ in getattr(pipeline_final, 'steps', [])]}")
+    modele_final, preprocesseur_final = charger_pipeline()
+    pipeline_final = True  # indique que tout est chargé
+    logger.info("✅ Modèle et préprocesseur chargés avec succès")
 except Exception as exc:
+    modele_final = None
+    preprocesseur_final = None
     pipeline_final = None
     erreur_chargement = str(exc)
-    logger.error(f"❌ Erreur chargement pipeline: {exc}")
+    logger.error(f"❌ Erreur chargement: {exc}")
 else:
     erreur_chargement = None
 
@@ -105,26 +111,13 @@ _shap_explainer = None
 
 
 def _get_modele_estimateur() -> Any:
-    """Retourne l'estimateur (dernier step du pipeline)."""
-    if pipeline_final is None:
-        return None
-    # Compatible sklearn Pipeline
-    if hasattr(pipeline_final, "steps") and pipeline_final.steps:
-        return pipeline_final.steps[-1][1]
-    # fallback
-    return pipeline_final
+    """Retourne l'estimateur."""
+    return modele_final
 
 
 def _get_preprocess() -> Any:
-    """Retourne le pipeline sans le modèle (tous les steps sauf le dernier)."""
-    if pipeline_final is None:
-        return None
-    if hasattr(pipeline_final, "__getitem__"):
-        try:
-            return pipeline_final[:-1]
-        except Exception:
-            return None
-    return None
+    """Retourne le préprocesseur."""
+    return preprocesseur_final
 
 
 def get_shap_explainer():
@@ -326,10 +319,10 @@ def _interprete_decision(probabilite: float, seuil: float) -> tuple[str, str]:
 
 @app.post("/predict", response_model=ReponsePrediction, tags=["Prediction"])
 def predire(requete: RequetePrediction) -> ReponsePrediction:
-    if pipeline_final is None:
+    if modele_final is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Pipeline non chargé: {erreur_chargement}"
+            detail=f"Modèle non chargé: {erreur_chargement}"
         )
 
     try:
@@ -343,7 +336,8 @@ def predire(requete: RequetePrediction) -> ReponsePrediction:
         )
 
     try:
-        proba = float(pipeline_final.predict_proba(donnees_client.values)[:, 1][0])
+        X_processed = preprocesseur_final.transform(donnees_client.values)
+        proba = float(modele_final.predict_proba(X_processed)[:, 1][0])
         logger.info(f"Probabilité défaut: {proba:.4f}")
     except Exception as exc:
         logger.error(f"Erreur prédiction: {exc}")
@@ -375,10 +369,10 @@ def predire(requete: RequetePrediction) -> ReponsePrediction:
 
 @app.post("/explain", response_model=ReponseExplication, tags=["Interpretability"])
 def expliquer(requete: RequeteExplication) -> ReponseExplication:
-    if pipeline_final is None:
+    if modele_final is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Pipeline non chargé"
+            detail="Modèle non chargé"
         )
 
     explainer = get_shap_explainer()
@@ -451,10 +445,10 @@ def expliquer(requete: RequeteExplication) -> ReponseExplication:
 
 @app.get("/feature-importance", response_model=ReponseFeatureImportance, tags=["Interpretability"])
 def feature_importance() -> ReponseFeatureImportance:
-    if pipeline_final is None:
+    if modele_final is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Pipeline non chargé"
+            detail="Modèle non chargé"
         )
 
     try:
