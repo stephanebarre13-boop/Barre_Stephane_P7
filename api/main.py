@@ -321,8 +321,14 @@ def predire(requete: RequetePrediction) -> ReponsePrediction:
         )
 
     try:
-        X = np.array(list(requete.features.values())).reshape(1, -1)
-        proba = float(pipeline_final.predict_proba(X)[:, 1][0])
+        X_input = np.array(list(requete.features.values())).reshape(1, -1)
+        n_model = pipeline_final.n_features_in_
+        n_input = X_input.shape[1]
+        if n_input < n_model:
+            X_input = np.hstack([X_input, np.zeros((1, n_model - n_input))])
+        elif n_input > n_model:
+            X_input = X_input[:, :n_model]
+        proba = float(pipeline_final.predict_proba(X_input)[:, 1][0])
         logger.info(f"Probabilité défaut: {proba:.4f}")
     except Exception as exc:
         logger.error(f"Erreur prédiction: {exc}")
