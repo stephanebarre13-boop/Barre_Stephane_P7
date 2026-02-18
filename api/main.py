@@ -44,8 +44,7 @@ DOSSIER_API = Path(__file__).resolve().parent
 DOSSIER_RACINE = DOSSIER_API.parent
 DOSSIER_ARTIFACTS = DOSSIER_RACINE / "artifacts"
 
-CHEMIN_MODELE = DOSSIER_ARTIFACTS / "meilleur_modele.lgb"
-CHEMIN_PREPROCESSEUR = DOSSIER_ARTIFACTS / "preprocesseur.joblib"
+CHEMIN_MODELE = DOSSIER_ARTIFACTS / "meilleur_modele.joblib"
 CHEMIN_PARAMS = DOSSIER_ARTIFACTS / "parametres_decision.joblib"
 
 # -----------------------------------------------------------------------------
@@ -53,17 +52,11 @@ CHEMIN_PARAMS = DOSSIER_ARTIFACTS / "parametres_decision.joblib"
 # -----------------------------------------------------------------------------
 
 def charger_pipeline() -> Any:
-    """Charge le modèle LightGBM natif et le préprocesseur"""
-    import lightgbm as lgb
+    """Charge le modèle LightGBM"""
     if not CHEMIN_MODELE.exists():
         raise FileNotFoundError(f"Modèle introuvable: {CHEMIN_MODELE}")
-    if not CHEMIN_PREPROCESSEUR.exists():
-        raise FileNotFoundError(f"Préprocesseur introuvable: {CHEMIN_PREPROCESSEUR}")
     logger.info(f"Chargement modèle depuis: {CHEMIN_MODELE}")
-    logger.info(f"Chargement préprocesseur depuis: {CHEMIN_PREPROCESSEUR}")
-    booster = lgb.Booster(model_file=str(CHEMIN_MODELE))
-    preprocesseur = joblib.load(CHEMIN_PREPROCESSEUR)
-    return booster, preprocesseur
+    return joblib.load(CHEMIN_MODELE)
 
 
 def charger_parametres_decision() -> Dict[str, Any]:
@@ -86,12 +79,9 @@ def charger_parametres_decision() -> Dict[str, Any]:
 # Load at startup
 # -----------------------------------------------------------------------------
 try:
-    modele_final, preprocesseur_final = charger_pipeline()
-    pipeline_final = True
-    logger.info("✅ Modèle et préprocesseur chargés avec succès")
+    pipeline_final = charger_pipeline()
+    logger.info("✅ Modèle chargé avec succès")
 except Exception as exc:
-    modele_final = None
-    preprocesseur_final = None
     pipeline_final = None
     erreur_chargement = str(exc)
     logger.error(f"❌ Erreur chargement: {exc}")
@@ -106,13 +96,13 @@ _shap_explainer = None
 
 
 def _get_modele_estimateur() -> Any:
-    """Retourne le modèle LightGBM."""
-    return modele_final
+    """Retourne le modèle."""
+    return pipeline_final
 
 
 def _get_preprocess() -> Any:
-    """Retourne le préprocesseur."""
-    return preprocesseur_final
+    """Pas de préprocesseur séparé - features déjà normalisées."""
+    return None
 
 
 def get_shap_explainer():
@@ -255,10 +245,10 @@ def health() -> HealthResponse:
 
 @app.get("/model-info", tags=["Model"])
 def model_info() -> Dict[str, Any]:
-    if modele_final is None:
+    if pipeline_final is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Modèle non chargé: {erreur_chargement}"
+            detail=f"Pipeline non chargé: {erreur_chargement}"
         )
 
     # ✅ Robuste : dernier step
@@ -314,10 +304,10 @@ def _interprete_decision(probabilite: float, seuil: float) -> tuple[str, str]:
 
 @app.post("/predict", response_model=ReponsePrediction, tags=["Prediction"])
 def predire(requete: RequetePrediction) -> ReponsePrediction:
-    if modele_final is None:
+    if pipeline_final is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Modèle non chargé: {erreur_chargement}"
+            detail=f"Pipeline non chargé: {erreur_chargement}"
         )
 
     try:
@@ -331,8 +321,8 @@ def predire(requete: RequetePrediction) -> ReponsePrediction:
         )
 
     try:
-        X_processed = preprocesseur_final.transform(donnees_client.values)
-        proba = float(modele_final.predict(X_processed)[0])
+        X = np.array(list(requete.features.values())).reshape(1, -1)
+        proba = float(pipeline_final.predict_proba(X)[:, 1][0])
         logger.info(f"Probabilité défaut: {proba:.4f}")
     except Exception as exc:
         logger.error(f"Erreur prédiction: {exc}")
@@ -364,10 +354,10 @@ def predire(requete: RequetePrediction) -> ReponsePrediction:
 
 @app.post("/explain", response_model=ReponseExplication, tags=["Interpretability"])
 def expliquer(requete: RequeteExplication) -> ReponseExplication:
-    if modele_final is None:
+    if pipeline_final is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Modèle non chargé"
+            detail="Pipeline non chargé"
         )
 
     explainer = get_shap_explainer()
@@ -384,7 +374,7 @@ def expliquer(requete: RequeteExplication) -> ReponseExplication:
         if preprocess is None:
             raise RuntimeError("Impossible d'extraire le preprocess du pipeline (pipeline[:-1])")
 
-        X_transformed = preprocess.transform(donnees_client.values)
+        X_transformed = np.array(list(donnees_client.iloc[0].values)).reshape(1, -1)
 
         shap_values = explainer.shap_values(X_transformed)
         if isinstance(shap_values, list):
@@ -440,22 +430,22 @@ def expliquer(requete: RequeteExplication) -> ReponseExplication:
 
 @app.get("/feature-importance", response_model=ReponseFeatureImportance, tags=["Interpretability"])
 def feature_importance() -> ReponseFeatureImportance:
-    if modele_final is None:
+    if pipeline_final is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Modèle non chargé"
+            detail="Pipeline non chargé"
         )
 
     try:
         modele = _get_modele_estimateur()
 
-        if modele is None:
+        if not hasattr(modele, 'feature_importances_'):
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail="Modèle non chargé"
+                detail="Ce modèle ne supporte pas feature_importances_"
             )
 
-        importances = modele.feature_importance(importance_type='gain')
+        importances = modele.feature_importances_
         preprocess = _get_preprocess()
 
         try:
