@@ -1,6 +1,17 @@
 """
-API Scoring Crédit - Projet 7 OpenClassrooms
-Version corrigée complète - Compatible dashboard Streamlit
+API FastAPI PREMIUM – Projet 7 (Prêt à dépenser)
+Version améliorée avec :
+- SHAP pour interprétabilité
+- Feature importance globale
+- Validation avancée
+- Logs structurés
+- Gestion erreurs professionnelle
+
+✅ Corrections apportées (robuste aux noms d'étapes du pipeline) :
+- Log des steps du pipeline au démarrage
+- /model-info : récupère le modèle via le dernier step (pipeline.steps[-1])
+- /explain : utilise le preprocess via pipeline[:-1]
+- /feature-importance : robuste aux noms de steps + fallback sur noms de features
 """
 
 from __future__ import annotations
@@ -13,325 +24,532 @@ import joblib
 import numpy as np
 import pandas as pd
 import shap
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 
-# ===============================
-# FIX JOBLIB (convert_to_string)
-# ===============================
-import __main__
-from utils_serialization import convert_to_string
-__main__.convert_to_string = convert_to_string
+# -----------------------------------------------------------------------------
+# Logging
+# -----------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# ===============================
-# LOGGING
-# ===============================
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
-logger = logging.getLogger("credit_api")
+# -----------------------------------------------------------------------------
+# Paths
+# -----------------------------------------------------------------------------
+DOSSIER_API = Path(__file__).resolve().parent
+DOSSIER_RACINE = DOSSIER_API.parent
+DOSSIER_ARTIFACTS = DOSSIER_RACINE / "artifacts"
 
-# ===============================
-# PATHS
-# ===============================
-API_DIR = Path(__file__).resolve().parent
-ROOT_DIR = API_DIR.parent
-ARTIFACTS_DIR = ROOT_DIR / "artifacts"
-MODEL_PATH = ARTIFACTS_DIR / "meilleur_modele.joblib"
-PREPROCESSOR_PATH = ARTIFACTS_DIR / "preprocesseur.joblib"
-PARAMS_PATH = ARTIFACTS_DIR / "parametres_decision.joblib"
-API_VERSION = "2.0.0"
+CHEMIN_PIPELINE = DOSSIER_ARTIFACTS / "pipeline_final.joblib"
+CHEMIN_PARAMS = DOSSIER_ARTIFACTS / "parametres_decision.joblib"
 
-# ===============================
-# LOAD ARTIFACTS
-# ===============================
-try:
-    logger.info(f"Chargement modèle : {MODEL_PATH}")
-    model = joblib.load(MODEL_PATH)
-    model_load_error = None
-except Exception as e:
-    model = None
-    model_load_error = str(e)
-    logger.error(f"Erreur chargement modèle : {e}")
+# -----------------------------------------------------------------------------
+# Loaders
+# -----------------------------------------------------------------------------
 
-try:
-    logger.info(f"Chargement préprocesseur : {PREPROCESSOR_PATH}")
-    preprocessor = joblib.load(PREPROCESSOR_PATH)
-    preprocessor_load_error = None
-except Exception as e:
-    preprocessor = None
-    preprocessor_load_error = str(e)
-    logger.warning(f"Préprocesseur non chargé : {e}")
+def charger_pipeline() -> Any:
+    """Charge le pipeline sklearn sauvegardé"""
+    if not CHEMIN_PIPELINE.exists():
+        raise FileNotFoundError(
+            f"Pipeline introuvable: {CHEMIN_PIPELINE}. "
+            "Exécutez les notebooks pour générer le modèle."
+        )
+    logger.info(f"Chargement pipeline depuis: {CHEMIN_PIPELINE}")
+    return joblib.load(CHEMIN_PIPELINE)
 
-THRESHOLD = 0.5
-try:
-    if PARAMS_PATH.exists():
-        params = joblib.load(PARAMS_PATH)
+
+def charger_parametres_decision() -> Dict[str, Any]:
+    """Charge les paramètres métier (seuil, coûts)"""
+    if CHEMIN_PARAMS.exists():
+        params = joblib.load(CHEMIN_PARAMS)
         if isinstance(params, dict):
-            THRESHOLD = float(params.get("seuil_optimal", 0.5))
-            logger.info(f"Seuil chargé : {THRESHOLD}")
-except Exception:
-    pass
+            logger.info(f"Paramètres métier chargés: {params}")
+            return params
+    logger.warning("Paramètres par défaut utilisés")
+    return {
+        "modele": "inconnu",
+        "seuil_optimal": 0.5,
+        "cout_fn": 10,
+        "cout_fp": 1
+    }
 
-# ===============================
-# FEATURE NAMES
-# ===============================
-def get_model_feature_names(m):
-    if m is None:
-        return None
-    if hasattr(m, "feature_name_"):
-        names = list(m.feature_name_)
-        if names:
-            return names
+
+# -----------------------------------------------------------------------------
+# Load at startup
+# -----------------------------------------------------------------------------
+try:
+    pipeline_final = charger_pipeline()
+    logger.info("✅ Pipeline chargé avec succès")
+    # ✅ Ajout demandé : log des steps
     try:
-        if hasattr(m, "booster_"):
-            return list(m.booster_.feature_name())
+        logger.info(f"Pipeline steps: {pipeline_final.named_steps.keys()}")
     except Exception:
-        pass
+        # fallback si objet inattendu
+        logger.info(f"Pipeline steps: {[name for name, _ in getattr(pipeline_final, 'steps', [])]}")
+except Exception as exc:
+    pipeline_final = None
+    erreur_chargement = str(exc)
+    logger.error(f"❌ Erreur chargement pipeline: {exc}")
+else:
+    erreur_chargement = None
+
+parametres_decision = charger_parametres_decision()
+SEUIL_DECISION = float(parametres_decision.get("seuil_optimal", 0.5))
+
+# SHAP explainer (lazy)
+_shap_explainer = None
+
+
+def _get_modele_estimateur() -> Any:
+    """Retourne l'estimateur (dernier step du pipeline)."""
+    if pipeline_final is None:
+        return None
+    # Compatible sklearn Pipeline
+    if hasattr(pipeline_final, "steps") and pipeline_final.steps:
+        return pipeline_final.steps[-1][1]
+    # fallback
+    return pipeline_final
+
+
+def _get_preprocess() -> Any:
+    """Retourne le pipeline sans le modèle (tous les steps sauf le dernier)."""
+    if pipeline_final is None:
+        return None
+    if hasattr(pipeline_final, "__getitem__"):
+        try:
+            return pipeline_final[:-1]
+        except Exception:
+            return None
     return None
 
-MODEL_FEATURE_NAMES = get_model_feature_names(model)
-if MODEL_FEATURE_NAMES:
-    logger.info(f"Modèle : {type(model).__name__} | {len(MODEL_FEATURE_NAMES)} features | ex: {MODEL_FEATURE_NAMES[:5]}")
-
-# ===============================
-# UTILS
-# ===============================
-def ensure_2d_array(x):
-    x = np.asarray(x)
-    if x.ndim == 1:
-        x = x.reshape(1, -1)
-    return x
-
-
-def build_transformed_row(features: Dict[str, Any]):
-    if model is None:
-        raise RuntimeError("Modèle non chargé")
-    if MODEL_FEATURE_NAMES is None:
-        raise RuntimeError("MODEL_FEATURE_NAMES non disponible")
-
-    has_feature_format = any(k.startswith("FEATURE_") for k in features)
-
-    # CAS 1 : FEATURE_XX (dashboard) → remappé par index
-    if has_feature_format:
-        remapped: Dict[str, Any] = {}
-        for k, v in features.items():
-            if k.startswith("FEATURE_"):
-                try:
-                    idx = int(k.replace("FEATURE_", ""))
-                    if 0 <= idx < len(MODEL_FEATURE_NAMES):
-                        remapped[MODEL_FEATURE_NAMES[idx]] = v
-                except ValueError:
-                    pass
-        df = pd.DataFrame([remapped])
-        df = df.reindex(columns=MODEL_FEATURE_NAMES, fill_value=0.0)
-        X = ensure_2d_array(df.values)
-        logger.info(f"CAS 1 (FEATURE_XX) : {X.shape[1]} features")
-        return X, MODEL_FEATURE_NAMES
-
-    # CAS 2 : Column_XX ou colonnes déjà alignées
-    df = pd.DataFrame([features])
-    df = df.reindex(columns=MODEL_FEATURE_NAMES, fill_value=0.0)
-    X = ensure_2d_array(df.values)
-    logger.info(f"CAS 2 (reindex) : {X.shape[1]} features")
-    return X, MODEL_FEATURE_NAMES
-
-
-def interpret_decision(prob: float, threshold: float):
-    gap = abs(prob - threshold)
-    if gap > 0.2:
-        confidence = "HAUTE"
-    elif gap > 0.1:
-        confidence = "MOYENNE"
-    else:
-        confidence = "FAIBLE (proche du seuil)"
-    if prob >= threshold:
-        interpretation = (
-            f"Risque de défaut ÉLEVÉ ({prob:.1%}). Recommandation : REFUS. "
-            f"Le client dépasse le seuil métier de {threshold:.1%}."
-        )
-    else:
-        interpretation = (
-            f"Risque de défaut FAIBLE ({prob:.1%}). Recommandation : ACCORD possible. "
-            f"Le client est en-dessous du seuil métier de {threshold:.1%}."
-        )
-    return interpretation, confidence
-
-# ===============================
-# SHAP
-# ===============================
-_shap_explainer = None
 
 def get_shap_explainer():
     global _shap_explainer
-    if _shap_explainer is None and model is not None:
+    if _shap_explainer is None and pipeline_final is not None:
         try:
-            logger.info("Initialisation SHAP TreeExplainer...")
-            _shap_explainer = shap.TreeExplainer(model)
-            logger.info("SHAP prêt")
-        except Exception as e:
-            logger.warning(f"SHAP indisponible : {e}")
+            logger.info("Initialisation SHAP explainer...")
+            modele = _get_modele_estimateur()
+            _shap_explainer = shap.TreeExplainer(modele)
+            logger.info("✅ SHAP explainer initialisé")
+        except Exception as exc:
+            logger.warning(f"⚠️ SHAP non disponible: {exc}")
+            _shap_explainer = None
     return _shap_explainer
 
-# ===============================
-# SCHEMAS
-# ===============================
-class PredictionRequest(BaseModel):
-    features: Dict[str, Any]
 
-class PredictionResponse(BaseModel):
-    probabilite_defaut: float
-    score_percent: float
-    decision: int
-    decision_label: str
-    seuil_decision: float
-    interpretation: str
-    confiance: str
-    client_id: Optional[int] = None
+# -----------------------------------------------------------------------------
+# Pydantic models
+# -----------------------------------------------------------------------------
+class RequetePrediction(BaseModel):
+    """Requête de prédiction avec features client"""
+    features: Dict[str, Any] = Field(
+        ...,
+        description="Features du client (clé/valeur)",
+        example={
+            "AMT_CREDIT": 450000,
+            "AMT_ANNUITY": 25000,
+            "AMT_GOODS_PRICE": 400000,
+            "DAYS_BIRTH": -15000,
+            "DAYS_EMPLOYED": -3000,
+            "CODE_GENDER": "F",
+            "NAME_EDUCATION_TYPE": "Higher education"
+        }
+    )
 
-class ExplainRequest(BaseModel):
-    features: Dict[str, Any]
-    top_n: int = 10
+    @validator('features')
+    def valider_features_non_vides(cls, v):
+        if not v:
+            raise ValueError("Features ne peut pas être vide")
+        return v
 
-class ExplainResponse(BaseModel):
-    base_value: float
-    prediction: float
-    shap_values: Dict[str, float]
-    top_features_positives: List[Dict[str, Any]]
-    top_features_negatives: List[Dict[str, Any]]
 
-class FeatureImportanceResponse(BaseModel):
-    features: List[Dict[str, Any]]
-    top_10: List[str]
+class ReponsePrediction(BaseModel):
+    """Réponse de prédiction complète"""
+    client_id: Optional[int] = Field(None, description="ID client (si fourni)")
+    probabilite_defaut: float = Field(..., description="Probabilité de défaut [0-1]")
+    score_percent: float = Field(..., description="Score en pourcentage [0-100]")
+    decision: int = Field(..., description="0=Accord, 1=Refus")
+    decision_label: str = Field(..., description="ACCORD ou REFUS")
+    seuil_decision: float = Field(..., description="Seuil optimal métier")
+    interpretation: str = Field(..., description="Explication de la décision")
+    confiance: str = Field(..., description="Niveau de confiance")
 
-# ===============================
-# FASTAPI
-# ===============================
+
+class RequeteExplication(BaseModel):
+    """Requête d'explication SHAP"""
+    features: Dict[str, Any] = Field(..., description="Features du client")
+    top_n: int = Field(10, description="Nombre de features à afficher", ge=1, le=50)
+
+
+class ReponseExplication(BaseModel):
+    """Réponse avec valeurs SHAP"""
+    base_value: float = Field(..., description="Valeur de base (moyenne)")
+    shap_values: Dict[str, float] = Field(..., description="Valeurs SHAP par feature")
+    prediction: float = Field(..., description="Prédiction finale")
+    top_features_positives: List[Dict[str, Any]] = Field(..., description="Features augmentant le risque")
+    top_features_negatives: List[Dict[str, Any]] = Field(..., description="Features réduisant le risque")
+
+
+class ReponseFeatureImportance(BaseModel):
+    """Importance globale des features"""
+    features: List[Dict[str, Any]] = Field(..., description="Liste des features et leur importance")
+    top_10: List[str] = Field(..., description="Top 10 features les plus importantes")
+
+
+class HealthResponse(BaseModel):
+    """Statut de santé de l'API"""
+    status: str = Field(..., description="ok ou ko")
+    pipeline_charge: bool
+    shap_disponible: bool
+    version: str
+    erreur: Optional[str] = None
+
+
+# -----------------------------------------------------------------------------
+# FastAPI app
+# -----------------------------------------------------------------------------
 app = FastAPI(
-    title="API Scoring Crédit – Projet 7",
-    version=API_VERSION,
-    description="API de scoring crédit avec prédiction, SHAP et feature importance.",
+    title="API Scoring Crédit PREMIUM – Projet 7",
+    version="2.0.0",
+    description="""
+    API professionnelle de scoring crédit avec :
+    - Prédiction de défaut
+    - Interprétabilité SHAP
+    - Feature importance globale
+    - Optimisation métier (seuil optimal)
+    """,
     docs_url="/docs",
     redoc_url="/redoc",
 )
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
-# ===============================
-# ROUTES
-# ===============================
-@app.get("/")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# -----------------------------------------------------------------------------
+# Endpoints
+# -----------------------------------------------------------------------------
+@app.get("/", tags=["Root"])
 def root():
-    return {"message": "API Scoring Crédit P7", "version": API_VERSION, "docs": "/docs"}
+    return {
+        "message": "API Scoring Crédit PREMIUM",
+        "version": "2.0.0",
+        "endpoints": {
+            "health": "/health",
+            "model_info": "/model-info",
+            "predict": "/predict (POST)",
+            "explain": "/explain (POST)",
+            "feature_importance": "/feature-importance"
+        }
+    }
 
 
-@app.get("/health")
-def health():
+@app.get("/health", response_model=HealthResponse, tags=["Monitoring"])
+def health() -> HealthResponse:
     shap_ok = get_shap_explainer() is not None
-    return {
-        "status": "ok" if model is not None else "ko",
-        "model_loaded": model is not None,
-        "preprocessor_loaded": preprocessor is not None,
-        "pipeline_charge": model is not None,
-        "shap_disponible": shap_ok,
-        "shap_available": shap_ok,
-        "version": API_VERSION,
-        "error": model_load_error or preprocessor_load_error,
-    }
+    return HealthResponse(
+        status="ok" if pipeline_final is not None else "ko",
+        pipeline_charge=pipeline_final is not None,
+        shap_disponible=shap_ok,
+        version="2.0.0",
+        erreur=erreur_chargement
+    )
 
 
-@app.get("/model-info")
-def model_info():
-    if model is None:
-        raise HTTPException(status_code=500, detail=f"Modèle non chargé : {model_load_error}")
-    n = len(MODEL_FEATURE_NAMES) if MODEL_FEATURE_NAMES else getattr(model, "n_features_", None)
+@app.get("/model-info", tags=["Model"])
+def model_info() -> Dict[str, Any]:
+    if pipeline_final is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Pipeline non chargé: {erreur_chargement}"
+        )
+
+    # ✅ Robuste : dernier step
+    modele = _get_modele_estimateur()
+    nom_modele = getattr(modele, "__class__", type("X", (), {})).__name__
+
     return {
-        "type_modele": type(model).__name__,
-        "n_features": n,
-        "seuil_decision": THRESHOLD,
-        "cout_fn": 10,
-        "cout_fp": 1,
+        "modele": parametres_decision.get("modele", nom_modele),
+        "type_modele": nom_modele,
+        "seuil_decision": SEUIL_DECISION,
+        "cout_fn": parametres_decision.get("cout_fn", 10),
+        "cout_fp": parametres_decision.get("cout_fp", 1),
         "formule_cout": "Coût = 10×FN + 1×FP",
+        "artefacts": {
+            "pipeline": str(CHEMIN_PIPELINE.name),
+            "parametres": str(CHEMIN_PARAMS.name)
+        }
     }
 
 
-@app.post("/predict", response_model=PredictionResponse)
-def predict(req: PredictionRequest):
-    if model is None:
-        raise HTTPException(status_code=500, detail=f"Modèle non chargé : {model_load_error}")
-    try:
-        X, _ = build_transformed_row(req.features)
-        proba = float(model.predict_proba(X)[:, 1][0])
-    except Exception as e:
-        logger.exception("Erreur prédiction")
-        raise HTTPException(status_code=400, detail=f"Erreur prédiction : {e}")
+def _interprete_decision(probabilite: float, seuil: float) -> tuple[str, str]:
+    ecart = abs(probabilite - seuil)
 
-    decision = int(proba >= THRESHOLD)
-    interpretation, confiance = interpret_decision(proba, THRESHOLD)
-    return PredictionResponse(
+    if probabilite >= seuil:
+        if ecart > 0.2:
+            confiance = "HAUTE"
+        elif ecart > 0.1:
+            confiance = "MOYENNE"
+        else:
+            confiance = "FAIBLE (proche du seuil)"
+
+        interpretation = (
+            f"⚠️ Risque de défaut ÉLEVÉ ({probabilite:.1%}). "
+            f"Recommandation : REFUS ou analyse approfondie. "
+            f"Le client dépasse le seuil métier de {seuil:.1%}."
+        )
+    else:
+        if ecart > 0.2:
+            confiance = "HAUTE"
+        elif ecart > 0.1:
+            confiance = "MOYENNE"
+        else:
+            confiance = "FAIBLE (proche du seuil)"
+
+        interpretation = (
+            f"✅ Risque de défaut FAIBLE ({probabilite:.1%}). "
+            f"Recommandation : ACCORD possible (sous réserve règles internes). "
+            f"Le client est en-dessous du seuil métier de {seuil:.1%}."
+        )
+
+    return interpretation, confiance
+
+
+@app.post("/predict", response_model=ReponsePrediction, tags=["Prediction"])
+def predire(requete: RequetePrediction) -> ReponsePrediction:
+    if pipeline_final is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Pipeline non chargé: {erreur_chargement}"
+        )
+
+    try:
+        donnees_client = pd.DataFrame([requete.features])
+        logger.info(f"Prédiction pour client avec {len(requete.features)} features")
+    except Exception as exc:
+        logger.error(f"Erreur création DataFrame: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Features invalides: {exc}"
+        )
+
+    try:
+        proba = float(pipeline_final.predict_proba(donnees_client.values)[:, 1][0])
+        logger.info(f"Probabilité défaut: {proba:.4f}")
+    except Exception as exc:
+        logger.error(f"Erreur prédiction: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Erreur pendant la prédiction. "
+                "Vérifiez que les features correspondent au modèle. "
+                f"Détail: {exc}"
+            )
+        )
+
+    decision = int(proba >= SEUIL_DECISION)
+    interpretation, confiance = _interprete_decision(proba, SEUIL_DECISION)
+
+    client_id = requete.features.get("SK_ID_CURR")
+
+    return ReponsePrediction(
+        client_id=client_id,
         probabilite_defaut=round(proba, 4),
         score_percent=round(proba * 100, 2),
         decision=decision,
         decision_label="REFUS" if decision == 1 else "ACCORD",
-        seuil_decision=THRESHOLD,
+        seuil_decision=SEUIL_DECISION,
         interpretation=interpretation,
-        confiance=confiance,
+        confiance=confiance
     )
 
 
-@app.post("/explain", response_model=ExplainResponse)
-def explain(req: ExplainRequest):
-    if model is None:
-        raise HTTPException(status_code=500, detail="Modèle non chargé")
+@app.post("/explain", response_model=ReponseExplication, tags=["Interpretability"])
+def expliquer(requete: RequeteExplication) -> ReponseExplication:
+    if pipeline_final is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Pipeline non chargé"
+        )
+
     explainer = get_shap_explainer()
     if explainer is None:
-        raise HTTPException(status_code=501, detail="SHAP non disponible")
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="SHAP non disponible pour ce modèle"
+        )
+
     try:
-        X, feature_names = build_transformed_row(req.features)
-        shap_values = explainer.shap_values(X)
+        donnees_client = pd.DataFrame([requete.features])
+
+        preprocess = _get_preprocess()
+        if preprocess is None:
+            raise RuntimeError("Impossible d'extraire le preprocess du pipeline (pipeline[:-1])")
+
+        X_transformed = preprocess.transform(donnees_client.values)
+
+        shap_values = explainer.shap_values(X_transformed)
         if isinstance(shap_values, list):
             shap_values = shap_values[1]
-        sv = np.asarray(shap_values)[0]
+
+        shap_values_1d = shap_values[0]
+
         base_value = explainer.expected_value
-        if isinstance(base_value, (list, np.ndarray)):
-            base_value = float(np.asarray(base_value)[-1])
+        if isinstance(base_value, np.ndarray):
+            base_value = float(base_value[1])
         else:
             base_value = float(base_value)
-        shap_dict = {str(n): float(v) for n, v in zip(feature_names, sv)}
-        top = sorted(shap_dict.items(), key=lambda kv: abs(kv[1]), reverse=True)[: req.top_n]
-        positives = [{"feature": k, "shap_value": float(v), "impact": "Augmente risque"} for k, v in top if v > 0]
-        negatives = [{"feature": k, "shap_value": float(abs(v)), "impact": "Réduit risque"} for k, v in top if v < 0]
-        return ExplainResponse(
-            base_value=round(base_value, 6),
-            prediction=round(base_value + float(np.sum(sv)), 6),
-            shap_values={k: round(v, 6) for k, v in top},
-            top_features_positives=positives[:5],
-            top_features_negatives=negatives[:5],
-        )
-    except Exception as e:
-        logger.exception("Erreur SHAP")
-        raise HTTPException(status_code=500, detail=f"Erreur SHAP : {e}")
 
+        try:
+            feature_names = preprocess.get_feature_names_out()
+        except Exception:
+            feature_names = [f"f_{i}" for i in range(len(shap_values_1d))]
 
-@app.get("/feature-importance", response_model=FeatureImportanceResponse)
-def feature_importance():
-    if model is None:
-        raise HTTPException(status_code=500, detail="Modèle non chargé")
-    if not hasattr(model, "feature_importances_"):
-        raise HTTPException(status_code=501, detail="feature_importances_ non disponible")
-    try:
-        importances = np.asarray(model.feature_importances_, dtype=float)
-        names = MODEL_FEATURE_NAMES or [f"f_{i}" for i in range(len(importances))]
-        total = float(np.sum(importances)) or 1.0
-        rows = [
-            {"feature": str(n), "importance": float(imp), "importance_percent": round(float(imp) / total * 100, 4)}
-            for n, imp in zip(names, importances)
+        shap_dict = {str(n): float(v) for n, v in zip(feature_names, shap_values_1d)}
+
+        sorted_shap = sorted(
+            shap_dict.items(),
+            key=lambda x: abs(x[1]),
+            reverse=True
+        )[:requete.top_n]
+
+        positives = [
+            {"feature": k, "shap_value": v, "impact": "Augmente risque"}
+            for k, v in sorted_shap if v > 0
         ]
-        rows.sort(key=lambda r: r["importance"], reverse=True)
-        return FeatureImportanceResponse(features=rows, top_10=[r["feature"] for r in rows[:10]])
-    except Exception as e:
-        logger.exception("Erreur feature importance")
-        raise HTTPException(status_code=500, detail=f"Erreur : {e}")
+        negatives = [
+            {"feature": k, "shap_value": abs(v), "impact": "Réduit risque"}
+            for k, v in sorted_shap if v < 0
+        ]
+
+        prediction = base_value + float(np.sum(shap_values_1d))
+
+        return ReponseExplication(
+            base_value=round(base_value, 4),
+            shap_values={k: round(v, 4) for k, v in sorted_shap},
+            prediction=round(prediction, 4),
+            top_features_positives=positives[:5],
+            top_features_negatives=negatives[:5]
+        )
+
+    except Exception as exc:
+        logger.error(f"Erreur SHAP: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erreur lors du calcul SHAP: {exc}"
+        )
 
 
+@app.get("/feature-importance", response_model=ReponseFeatureImportance, tags=["Interpretability"])
+def feature_importance() -> ReponseFeatureImportance:
+    if pipeline_final is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Pipeline non chargé"
+        )
+
+    try:
+        modele = _get_modele_estimateur()
+
+        if not hasattr(modele, 'feature_importances_'):
+            raise HTTPException(
+                status_code=status.HTTP_501_NOT_IMPLEMENTED,
+                detail="Ce modèle ne supporte pas feature_importances_"
+            )
+
+        importances = modele.feature_importances_
+        preprocess = _get_preprocess()
+
+        try:
+            feature_names = preprocess.get_feature_names_out() if preprocess is not None else None
+        except Exception:
+            feature_names = None
+
+        if feature_names is None:
+            feature_names = [f"f_{i}" for i in range(len(importances))]
+
+        importance_list = [
+            {
+                "feature": str(name),
+                "importance": float(imp),
+                "importance_percent": round(float(imp) * 100, 2)
+            }
+            for name, imp in zip(feature_names, importances)
+        ]
+
+        importance_list.sort(key=lambda x: x['importance'], reverse=True)
+        top_10 = [item['feature'] for item in importance_list[:10]]
+
+        logger.info(f"Feature importance calculée pour {len(importance_list)} features")
+
+        return ReponseFeatureImportance(
+            features=importance_list,
+            top_10=top_10
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Erreur feature importance: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Erreur calcul feature importance: {exc}"
+        )
+
+
+
+# -----------------------------------------------------------------------------
+# Clients batch
+# -----------------------------------------------------------------------------
+CHEMIN_CLIENTS = DOSSIER_ARTIFACTS / "batch_clients.json"
+
+
+@app.get("/clients", tags=["Clients"])
+def liste_clients():
+    """Retourne la liste des clients disponibles"""
+    import json
+    if not CHEMIN_CLIENTS.exists():
+        raise HTTPException(status_code=404, detail="batch_clients.json introuvable")
+    try:
+        with open(CHEMIN_CLIENTS) as f:
+            clients = json.load(f)
+        ids = [c.get("SK_ID_CURR", i) for i, c in enumerate(clients)]
+        return {"clients": ids, "total": len(ids)}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/clients/{client_id}", tags=["Clients"])
+def get_client(client_id: int):
+    """Retourne les features d'un client par son ID"""
+    import json
+    if not CHEMIN_CLIENTS.exists():
+        raise HTTPException(status_code=404, detail="batch_clients.json introuvable")
+    try:
+        with open(CHEMIN_CLIENTS) as f:
+            clients = json.load(f)
+        for c in clients:
+            if c.get("SK_ID_CURR") == client_id:
+                return {"client_id": client_id, "features": c}
+        raise HTTPException(status_code=404, detail=f"Client {client_id} introuvable")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# -----------------------------------------------------------------------------
+# Entry point
+# -----------------------------------------------------------------------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
