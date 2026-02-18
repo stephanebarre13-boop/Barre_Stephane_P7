@@ -377,9 +377,6 @@ def expliquer(requete: RequeteExplication) -> ReponseExplication:
         donnees_client = pd.DataFrame([requete.features])
 
         preprocess = _get_preprocess()
-        if preprocess is None:
-            raise RuntimeError("Impossible d'extraire le preprocess du pipeline (pipeline[:-1])")
-
         X_transformed = np.array(list(donnees_client.iloc[0].values)).reshape(1, -1)
 
         shap_values = explainer.shap_values(X_transformed)
@@ -394,10 +391,7 @@ def expliquer(requete: RequeteExplication) -> ReponseExplication:
         else:
             base_value = float(base_value)
 
-        try:
-            feature_names = preprocess.get_feature_names_out()
-        except Exception:
-            feature_names = [f"f_{i}" for i in range(len(shap_values_1d))]
+        feature_names = list(requete.features.keys()) if len(list(requete.features.keys())) == len(shap_values_1d) else [f"f_{i}" for i in range(len(shap_values_1d))]
 
         shap_dict = {str(n): float(v) for n, v in zip(feature_names, shap_values_1d)}
 
