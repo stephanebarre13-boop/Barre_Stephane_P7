@@ -615,15 +615,66 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs(
 with tab1:
     st.header("Informations du client")
 
+    # ── SELECTION CLIENT PRE-DEFINI ─────────────────────────
+    CLIENTS_PREDEFINED = {
+        "Saisie manuelle": None,
+        "Client ID : BATCH_000 (profil standard)": {
+            "genre": "F", "age": 35, "education": "Secondaire",
+            "situation": "Marié(e)", "enfants": 0,
+            "revenu": 150000, "anciennete": 5, "type_emploi": "Salarié",
+            "credit": 450000, "annuite": 25000, "prix": 405000, "duree": 20,
+        },
+        "Client ID : BATCH_001 (risque élevé)": {
+            "genre": "M", "age": 27, "education": "Incomplet",
+            "situation": "Célibataire", "enfants": 2,
+            "revenu": 60000, "anciennete": 1, "type_emploi": "Autre",
+            "credit": 350000, "annuite": 30000, "prix": 380000, "duree": 15,
+        },
+        "Client ID : BATCH_002 (faible risque)": {
+            "genre": "F", "age": 48, "education": "Enseignement supérieur",
+            "situation": "Marié(e)", "enfants": 1,
+            "revenu": 280000, "anciennete": 15, "type_emploi": "Salarié",
+            "credit": 200000, "annuite": 15000, "prix": 250000, "duree": 18,
+        },
+        "Client ID : BATCH_003 (profil mixte)": {
+            "genre": "M", "age": 40, "education": "Secondaire",
+            "situation": "Union civile", "enfants": 3,
+            "revenu": 120000, "anciennete": 8, "type_emploi": "Salarié",
+            "credit": 300000, "annuite": 22000, "prix": 330000, "duree": 15,
+        },
+        "Client ID : BATCH_004 (revenus élevés)": {
+            "genre": "F", "age": 55, "education": "Enseignement supérieur",
+            "situation": "Marié(e)", "enfants": 0,
+            "revenu": 450000, "anciennete": 25, "type_emploi": "Salarié",
+            "credit": 600000, "annuite": 40000, "prix": 700000, "duree": 25,
+        },
+    }
+
+    selected_client = st.selectbox(
+        "Sélectionner un client existant ou saisir manuellement",
+        options=list(CLIENTS_PREDEFINED.keys()),
+        key="selected_client",
+        help="Choisissez un client pré-défini pour pré-remplir le formulaire, ou sélectionnez 'Saisie manuelle'.",
+    )
+
+    client_preset = CLIENTS_PREDEFINED[selected_client]
+    if client_preset is not None:
+        st.info(f"Formulaire pré-rempli avec les données de {selected_client}. Vous pouvez modifier les valeurs.")
+
+    st.markdown("---")
+
     col1, col2, col3 = st.columns(3)
 
     with col1:
         st.subheader("👤 Démographiques")
-        genre = st.selectbox("Genre", ["F", "M"], key="genre")
-        age = st.slider("Âge", min_value=18, max_value=70, value=35, key="age")
+        genre = st.selectbox("Genre", ["F", "M"],
+            index=["F","M"].index(client_preset["genre"]) if client_preset else 0, key="genre")
+        age = st.slider("Âge", min_value=18, max_value=70,
+            value=client_preset["age"] if client_preset else 35, key="age")
         education = st.selectbox(
             "Niveau d'éducation",
             ["Secondaire", "Enseignement supérieur", "Incomplet"],
+            index=["Secondaire","Enseignement supérieur","Incomplet"].index(client_preset["education"]) if client_preset and client_preset["education"] in ["Secondaire","Enseignement supérieur","Incomplet"] else 0,
             key="education",
         )
         situation = st.selectbox(
@@ -631,12 +682,12 @@ with tab1:
             ["Marié(e)", "Célibataire", "Union civile", "Séparé(e)", "Veuf/Veuve"],
             key="situation",
         )
-        enfants = st.number_input("Nombre d'enfants", min_value=0, max_value=10, value=0, key="enfants")
+        enfants = st.number_input("Nombre d'enfants", min_value=0, max_value=10, value=client_preset["enfants"] if client_preset else 0, key="enfants")
 
     with col2:
         st.subheader("💼 Professionnel")
-        revenu = st.number_input("Revenu annuel (€)", min_value=0, value=150000, step=10000, key="revenu")
-        anciennete = st.slider("Ancienneté (années)", min_value=0, max_value=40, value=5, key="anciennete")
+        revenu = st.number_input("Revenu annuel (€)", min_value=0, value=client_preset["revenu"] if client_preset else 150000, step=10000, key="revenu")
+        anciennete = st.slider("Ancienneté (années)", min_value=0, max_value=40, value=client_preset["anciennete"] if client_preset else 5, key="anciennete")
         type_emploi = st.selectbox(
             "Type d'emploi",
             ["Salarié", "Fonctionnaire", "Travailleur indépendant", "En recherche"],
@@ -645,10 +696,10 @@ with tab1:
 
     with col3:
         st.subheader("💰 Crédit demandé")
-        credit = st.number_input("Montant crédit (€)", min_value=0, value=450000, step=10000, key="credit")
-        annuite = st.number_input("Annuité (€/an)", min_value=0, value=25000, step=1000, key="annuite")
-        prix = st.number_input("Prix du bien (€)", min_value=0, value=405000, step=10000, key="prix")
-        duree = st.slider("Durée (années)", min_value=1, max_value=30, value=int(credit / annuite) if annuite > 0 else 20)
+        credit = st.number_input("Montant crédit (€)", min_value=0, value=client_preset["credit"] if client_preset else 450000, step=10000, key="credit")
+        annuite = st.number_input("Annuité (€/an)", min_value=0, value=client_preset["annuite"] if client_preset else 25000, step=1000, key="annuite")
+        prix = st.number_input("Prix du bien (€)", min_value=0, value=client_preset["prix"] if client_preset else 405000, step=10000, key="prix")
+        duree = st.slider("Durée (années)", min_value=1, max_value=30, value=client_preset["duree"] if client_preset else (int(credit / annuite) if annuite > 0 else 20))
 
     st.markdown("---")
 
@@ -946,6 +997,17 @@ with tab2:
 # TAB 3 : STATS
 # =========================
 
+# Données de population de référence (distribution revenus, basée sur le dataset Home Credit)
+POPULATION_REVENUS = [
+    {"tranche": "< 50K", "min": 0, "max": 50000, "count": 8500},
+    {"tranche": "50K–100K", "min": 50000, "max": 100000, "count": 18200},
+    {"tranche": "100K–150K", "min": 100000, "max": 150000, "count": 22400},
+    {"tranche": "150K–200K", "min": 150000, "max": 200000, "count": 19800},
+    {"tranche": "200K–300K", "min": 200000, "max": 300000, "count": 16500},
+    {"tranche": "300K–500K", "min": 300000, "max": 500000, "count": 9200},
+    {"tranche": "> 500K", "min": 500000, "max": 9999999, "count": 3100},
+]
+
 with tab3:
     st.header("📈 Statistiques globales")
 
@@ -993,6 +1055,60 @@ with tab3:
             st.error(f"Erreur: {e}")
     else:
         st.warning("API non accessible")
+
+    # ── GRAPHIQUE COMPARATIF : DISTRIBUTION DES REVENUS ─────
+    st.markdown("---")
+    st.markdown("### 📊 Distribution des revenus — Comparaison avec le client analysé")
+
+    revenu_client = st.session_state.get("last_client_inputs", {}).get("Revenu annuel", None)
+
+    df_pop = pd.DataFrame(POPULATION_REVENUS)
+
+    # Colorier la tranche du client courant
+    if revenu_client is not None:
+        tranche_client = next(
+            (t["tranche"] for t in POPULATION_REVENUS if t["min"] <= revenu_client < t["max"]),
+            None
+        )
+        df_pop["couleur"] = df_pop["tranche"].apply(
+            lambda t: "Client sélectionné" if t == tranche_client else "Population"
+        )
+        color_map = {"Client sélectionné": "#C9A84C", "Population": "#1E3A5F"}
+        st.info(
+            f"Le revenu du client analysé ({revenu_client:,.0f} €) se situe dans la tranche **{tranche_client}**."
+            if tranche_client else "Lancez d'abord une prédiction pour positionner le client sur ce graphe."
+        )
+    else:
+        df_pop["couleur"] = "Population"
+        color_map = {"Population": "#1E3A5F"}
+        st.info("Lancez une prédiction dans l'onglet **🎯 Prédiction** pour positionner le client sur ce graphe.")
+
+    fig_rev = px.bar(
+        df_pop,
+        x="tranche",
+        y="count",
+        color="couleur",
+        color_discrete_map=color_map,
+        title="Distribution des revenus annuels des clients (dataset Home Credit)",
+        labels={"tranche": "Tranche de revenu", "count": "Nombre de clients", "couleur": ""},
+        text="count",
+    )
+    fig_rev.update_traces(texttemplate="%{text:,}", textposition="outside")
+    fig_rev.update_layout(
+        height=420,
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        xaxis=dict(categoryorder="array", categoryarray=[t["tranche"] for t in POPULATION_REVENUS]),
+        plot_bgcolor="white",
+        yaxis=dict(gridcolor="#E2E8F0"),
+        margin=dict(t=60, b=40),
+    )
+    st.plotly_chart(fig_rev, use_container_width=True)
+
+    st.caption(
+        "Source : dataset Home Credit Default Risk (307 511 clients). "
+        "La barre en **or** représente la tranche de revenu du client analysé."
+    )
 
 
 # =========================
