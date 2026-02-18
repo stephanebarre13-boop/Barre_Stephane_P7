@@ -44,7 +44,7 @@ DOSSIER_API = Path(__file__).resolve().parent
 DOSSIER_RACINE = DOSSIER_API.parent
 DOSSIER_ARTIFACTS = DOSSIER_RACINE / "artifacts"
 
-CHEMIN_MODELE = DOSSIER_ARTIFACTS / "meilleur_modele.joblib"
+CHEMIN_MODELE = DOSSIER_ARTIFACTS / "meilleur_modele.lgb"
 CHEMIN_PREPROCESSEUR = DOSSIER_ARTIFACTS / "preprocesseur.joblib"
 CHEMIN_PARAMS = DOSSIER_ARTIFACTS / "parametres_decision.joblib"
 
@@ -53,22 +53,17 @@ CHEMIN_PARAMS = DOSSIER_ARTIFACTS / "parametres_decision.joblib"
 # -----------------------------------------------------------------------------
 
 def charger_pipeline() -> Any:
-    """Charge le modèle et le préprocesseur séparément"""
+    """Charge le modèle LightGBM natif et le préprocesseur"""
+    import lightgbm as lgb
     if not CHEMIN_MODELE.exists():
-        raise FileNotFoundError(
-            f"Modèle introuvable: {CHEMIN_MODELE}. "
-            "Exécutez les notebooks pour générer le modèle."
-        )
+        raise FileNotFoundError(f"Modèle introuvable: {CHEMIN_MODELE}")
     if not CHEMIN_PREPROCESSEUR.exists():
-        raise FileNotFoundError(
-            f"Préprocesseur introuvable: {CHEMIN_PREPROCESSEUR}. "
-            "Exécutez les notebooks pour générer le préprocesseur."
-        )
+        raise FileNotFoundError(f"Préprocesseur introuvable: {CHEMIN_PREPROCESSEUR}")
     logger.info(f"Chargement modèle depuis: {CHEMIN_MODELE}")
     logger.info(f"Chargement préprocesseur depuis: {CHEMIN_PREPROCESSEUR}")
-    modele = joblib.load(CHEMIN_MODELE)
+    booster = lgb.Booster(model_file=str(CHEMIN_MODELE))
     preprocesseur = joblib.load(CHEMIN_PREPROCESSEUR)
-    return modele, preprocesseur
+    return booster, preprocesseur
 
 
 def charger_parametres_decision() -> Dict[str, Any]:
@@ -92,7 +87,7 @@ def charger_parametres_decision() -> Dict[str, Any]:
 # -----------------------------------------------------------------------------
 try:
     modele_final, preprocesseur_final = charger_pipeline()
-    pipeline_final = True  # indique que tout est chargé
+    pipeline_final = True
     logger.info("✅ Modèle et préprocesseur chargés avec succès")
 except Exception as exc:
     modele_final = None
@@ -111,7 +106,7 @@ _shap_explainer = None
 
 
 def _get_modele_estimateur() -> Any:
-    """Retourne l'estimateur."""
+    """Retourne le modèle LightGBM."""
     return modele_final
 
 
@@ -260,10 +255,10 @@ def health() -> HealthResponse:
 
 @app.get("/model-info", tags=["Model"])
 def model_info() -> Dict[str, Any]:
-    if pipeline_final is None:
+    if modele_final is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Pipeline non chargé: {erreur_chargement}"
+            detail=f"Modèle non chargé: {erreur_chargement}"
         )
 
     # ✅ Robuste : dernier step
@@ -337,7 +332,7 @@ def predire(requete: RequetePrediction) -> ReponsePrediction:
 
     try:
         X_processed = preprocesseur_final.transform(donnees_client.values)
-        proba = float(modele_final.predict_proba(X_processed)[:, 1][0])
+        proba = float(modele_final.predict(X_processed)[0])
         logger.info(f"Probabilité défaut: {proba:.4f}")
     except Exception as exc:
         logger.error(f"Erreur prédiction: {exc}")
@@ -454,13 +449,13 @@ def feature_importance() -> ReponseFeatureImportance:
     try:
         modele = _get_modele_estimateur()
 
-        if not hasattr(modele, 'feature_importances_'):
+        if modele is None:
             raise HTTPException(
                 status_code=status.HTTP_501_NOT_IMPLEMENTED,
-                detail="Ce modèle ne supporte pas feature_importances_"
+                detail="Modèle non chargé"
             )
 
-        importances = modele.feature_importances_
+        importances = modele.feature_importance(importance_type='gain')
         preprocess = _get_preprocess()
 
         try:
